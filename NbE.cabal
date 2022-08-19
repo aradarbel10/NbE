@@ -23,10 +23,12 @@ extra-source-files:
     readme.md
 
 executable NbE
+    extensions:     Strict
     main-is:        Main.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules:  Common.Name, Common.Env, Common.Utils,
+                    Surface
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -34,5 +36,5 @@ executable NbE
                     , mtl
                     , parsec
                     , transformers
-    hs-source-dirs:   ./
+    hs-source-dirs:   src
     default-language: Haskell2010

@@ -1,84 +1,47 @@
 {-# LANGUAGE DerivingVia, PatternSynonyms #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Use <$>" #-}
-{-# LANGUAGE TupleSections #-}
 
 import Data.List                 ( elemIndex, intercalate )
-import Data.Bifunctor            (first, bimap)
+import Data.Bifunctor            ( first, bimap )
+import Common.Utils              ( indexOf, lookupIndex )
 
 import Control.Monad.Identity    ( Identity, when, liftM2 )
-import Control.Monad.Trans.State ( StateT, get, put, runStateT )
 
-import Text.Parsec               ( Parsec, (<|>), getState, many1, ParseError, runParser, modifyState, SourcePos, try, optional, oneOf, (<?>) )
-import Text.Parsec.Token         ( makeTokenParser, GenTokenParser(identifier, parens, reserved, reservedOp), GenLanguageDef (..) )
-import Text.Parsec.Expr          ( )
-import Text.Parsec.Language      ( haskellStyle )
+import System.IO                 ( hFlush, stdout )
+import Debug.Trace               ( trace, traceShowId )
 
-import System.IO                 (hFlush, stdout)
-import Debug.Trace               (trace, traceShowId)
+import Surface                   ( Raw(..), RTyp, parse )
 
+import Common.Name               ( Name, name, anon, isAnon, fresh, refresh )
+import Common.Env                ( EnvM, runEnv )
 
 
-indexOf :: Eq a => [a] -> a -> Maybe Int
-indexOf [] _ = Nothing
-indexOf (x:xs) y = if x == y then Just 0 else (1+) <$> indexOf xs y
+freshMeta :: Ctx -> VTyp -> EnvM Trm
+freshMeta _ _ = Meta <$> fresh
 
-lookupIndex :: Eq a => [(a, b)] -> a -> Maybe (Int, b)
-lookupIndex [] _ = Nothing
-lookupIndex ((x, z):xs) y = if x == y then Just (0, z) else first (1+) <$> lookupIndex xs y
+refreshMeta :: Ctx -> VTyp -> String -> EnvM Trm
+refreshMeta ctx typ n = do
+    m <- refresh (name n)
+    trace ("meta: " ++ showCtx ctx ++ " " ++ show m ++ " : " ++ showVal ctx typ) $ return (Meta m)
+    
 
-
-data MetaCtx = MetaCtx -- TODO
-type ErrMsg = (String, SourcePos)
-data EnvRec = EnvRec { fri :: Integer, mctx :: MetaCtx }
-type EnvM a = StateT EnvRec (Either ErrMsg) a
-
-runEnv :: EnvM a -> Either ErrMsg a
-runEnv m = fst <$> runStateT m (EnvRec 0 MetaCtx)
-
-
-fresh :: Name -> EnvM Name
-fresh x = do
-    curr <- get
-    put $ curr {fri = fri curr + 1}
-    return $ x ++ show (fri curr)
-
-newMeta :: Name -> EnvM Trm
-newMeta x = do
-    x' <- fresh x
-    return (Meta x')
-
-
-type Name = String
-
-newtype Idx     = Idx     {unIdx  :: Int} deriving (Show, Eq, Num) via Int
-newtype Lvl     = Lvl     {unLvl  :: Int} deriving (Show, Eq, Num) via Int
+newtype Idx = Idx {unIdx  :: Int} deriving (Show, Eq, Num) via Int
+newtype Lvl = Lvl {unLvl  :: Int} deriving (Show, Eq, Num) via Int
 type    Siz = Lvl
 
---- user-facing
-type RTyp = Raw
-data Raw = RLam Name Raw
-         | RApp Raw Raw
-         | RLet Name RTyp Raw Raw
-         | RPi (Maybe Name) RTyp Raw
-         | RAnn Raw RTyp
-         | RUni
-         | RHole
-         | RVar Name
-    deriving Show
 --- core language
 type Spine = [Name]
 type Typ = Trm
-data Trm = Lam Name Typ Trm     -- λn . e
+data Trm = Lam Name Trm         -- λn . e
          | App Trm Trm          -- (e1 e2)
          | Let Name Typ Trm Trm -- let n = e in e'
          | Pi Name Typ Trm      -- Π(x:A).Bx
-         | Uni
-         | Meta Name
+         | Uni                  -- Type
+         | Meta Name            -- ?m
          | Var Idx
 --- semantic domain
 type VTyp = Val
-data Val = VLam Name VTyp (Val -> Val)
+data Val = VLam Name (Val -> Val)
          | VPi Name VTyp (Val -> Val)
          | VUni
          | VNeu Neu
@@ -126,80 +89,6 @@ type Env = [(Name, Val)]
           ╚═════════════╝ 
 -}
 
-
-
-
---- parsing
-type Parser a = Parsec String () a
-
-lexer :: GenTokenParser String u Identity
-lexer = makeTokenParser $ haskellStyle
-    { reservedNames = ["Type", "lam", "let", "in", "_"]
-    , reservedOpNames = ["=", ".", ":", "->"]
-    }
-
-parse :: String -> Either ParseError Raw
-parse = runParser parseTerm () ""
-
-
-parseName :: Parser Name
-parseName = identifier lexer
-
-parseParam :: Parser (Maybe Name, RTyp)
-parseParam = try (parens lexer (do
-                    n <- (Just <$> parseName) <|> (reserved lexer "_" >> pure Nothing)
-                    reservedOp lexer ":"
-                    t <- parseTerm
-                    return (n, t)))
-             <|> ((Nothing,) <$> parseAtom)
-
-
-parseLam :: Parser Raw
-parseLam = do
-    reserved lexer "lam"
-    ns <- many1 parseName
-    reservedOp lexer "."
-    e <- parseTerm
-    return $ foldr RLam e ns
-
-parseLet :: Parser Raw
-parseLet = do
-    reserved lexer "let"
-    n <- parseName
-    reservedOp lexer ":"
-    t <- parseTerm
-    reservedOp lexer "="
-    e <- parseTerm
-    reserved lexer "in"
-    e' <- parseTerm
-    return $ RLet n t e e'
-
-parsePi :: Parser Raw
-parsePi = do
-    (x, t) <- parseParam
-    reservedOp lexer "->"
-    s <- parseTerm
-    return $ RPi x t s
-
-parseApp :: Parser Raw
-parseApp = do
-    es <- many1 parseAtom
-    return $ foldl1 RApp es
-
-parseVar :: Parser Raw
-parseVar = RVar <$> parseName
-
-
-parseTerm :: Parser Raw
-parseTerm = try parsePi <|> try parseLam <|> try parseLet <|> try parseApp
-
-parseAtom :: Parser Raw
-parseAtom = try parseVar
-        <|> try (reserved lexer "_" >> pure RHole)
-        <|> try (reserved lexer "Type" >> pure RUni)
-        <|> try (parens lexer (parseTerm <* optional (reservedOp lexer ":" >> parseTerm)))
-
-
 --- untyped elaboration
 {-
 elab :: Raw -> Trm
@@ -224,13 +113,13 @@ atIdx env (Idx i) = snd $ env !! i
 
 --- beta reduction
 vApp :: Val -> Val -> Val
-vApp (VLam n _ f) v' = f v'
+vApp (VLam n f) v' = f v'
 vApp (VNeu n) v' = VApp n v'
 vApp _ _ = error "vApp TODO"
 
 --- normalization by evaluation
 eval :: Env -> Trm -> Val
-eval env (Lam n t e) = VLam n (eval env t) (\v -> eval ((n, v):env) e)
+eval env (Lam n e) = VLam n (\v -> eval ((n, v):env) e)
 eval env (Let n _ e e') = eval ((n, eval env e):env) e'
 eval env (App e1 e2) = vApp (eval env e1) (eval env e2)
 eval env (Var idx) = env `atIdx` idx
@@ -239,7 +128,7 @@ eval env Uni = VUni
 eval env (Meta m) = VMeta m
 
 quote :: Siz -> Val -> Trm
-quote siz (VLam n t f) = Lam n (quote siz t) $ quote (siz + 1) (f (VVar siz))
+quote siz (VLam n f) = Lam n $ quote (siz + 1) (f (VVar siz))
 quote siz (VApp n v') = App (quote siz (VNeu n)) (quote siz v')
 quote siz (VVar lvl) = Var (lvlToIdx siz lvl)
 quote siz VUni = Uni
@@ -251,12 +140,13 @@ normal :: Env -> Trm -> Trm
 normal env = quote (Lvl $ length env) . eval env
 
 --- pattern unification
+showCtx :: Ctx -> String
+showCtx ctx = "[" -- ++ intercalate ", " (map (\(a, b) -> "(" ++ a ++ ", " ++ b ++ ")") $ map (bimap show (showVal ctx)) (vals ctx)) ++ " | "
+        ++ intercalate ", " (map (\(a, b) -> "(" ++ a ++ ", " ++ b ++ ")") $ map (bimap show (showVal ctx)) (typs ctx)) ++ "]"
+
 unify :: Ctx -> Val -> Val -> EnvM ()
 unify ctx t1 t2 =
-    trace ("unify: {"
-        ++ intercalate ", " (map (\(a, b) -> "(" ++ a ++ ", " ++ b ++ ")") $ map (bimap id (showVal ctx)) (vals ctx)) ++ " | "
-        ++ intercalate ", " (map (\(a, b) -> "(" ++ a ++ ", " ++ b ++ ")") $ map (bimap id (showVal ctx)) (typs ctx)) ++ "}  "
-    ++ showVal ctx t1 ++ " ≡ " ++ showVal ctx t2) $ return ()
+    trace ("unify: " ++ showCtx ctx ++ " " ++ showVal ctx t1 ++ " ≡ " ++ showVal ctx t2) $ return ()
 
 
 --- bidirectional elaboration
@@ -267,26 +157,32 @@ height Ctx {vals = vs} = Lvl $ length vs
 bind :: Ctx -> Name -> VTyp -> Ctx
 bind ctx x t = ctx { vals = (x, VVar (height ctx)):vals ctx, typs = (x, t):typs ctx }
 
-checkRLet :: Ctx -> Name -> RTyp -> Raw -> EnvM Ctx
+defn :: Ctx -> Name -> VTyp -> Val -> Ctx
+defn ctx x t e = ctx { vals = (x, e):vals ctx, typs = (x, t):typs ctx }
+
+checkRLet :: Ctx -> Name -> RTyp -> Raw -> EnvM (Ctx, Name, Typ, Trm)
 checkRLet ctx x t e = do
     t <- check ctx t VUni
     let vt = eval (vals ctx) t
     e <- check ctx e vt
-    let ve = eval (vals ctx) e
-    let ctx' = bind ctx x vt
-    return ctx'
+    --let ve = eval (vals ctx) e
+    let ctx' = defn ctx x vt (VVar $ height ctx)
+    return (ctx', x, t, e)
 
 
 check :: Ctx -> Raw -> VTyp -> EnvM Trm
 check ctx (RLam x e) (VPi y t s) = do
     let ctx' = bind ctx x t
-    check ctx' e (s $ VVar (height ctx'))
+    e <- check ctx' e (s $ VVar (height ctx' - 1))
+    return $ Lam x e
 
 check ctx (RLet x t e c) s = do
-    ctx <- checkRLet ctx x t e
-    check ctx c s
+    (ctx, x, t, e) <- checkRLet ctx x t e
+    c <- check ctx c s
+    return $ Let x t e c
 
-check ctx RHole t = newMeta "m"
+
+check ctx RHole t = refreshMeta ctx t "m"
 
 check ctx raw typ = do
     (trm, typ') <- infer ctx raw
@@ -294,14 +190,12 @@ check ctx raw typ = do
     return trm
 
 infer :: Ctx -> Raw -> EnvM (Trm, VTyp)
-infer ctx (RVar x) = case lookupIndex (typs ctx) x of
-    Nothing -> error $ "scope error: can't find " ++ x ++ " in context " ++ show (map fst $ typs ctx)
-    Just (i, t) -> return (Var (Idx i), t)
+infer ctx (RVar x) = case (lookupIndex (typs ctx) x, lookupIndex (vals ctx) x) of
+    (Just (i, t), Just (j, v)) -> return (quote (height ctx) v, t)
+    _ -> error $ "scope error: can't find " ++ show x ++ " in context " ++ show (map fst $ typs ctx)
 
 infer ctx (RPi x t s) = do
-    x <- case x of
-        Nothing -> pure ""
-        Just n -> pure n
+    x <- pure $ anon x
     t <- check ctx t VUni
     let vt = eval (vals ctx) t
     let ctx' = bind ctx x vt
@@ -326,10 +220,10 @@ infer ctx (RApp r1 r2) = do
             t1 ≡ (x : ?t2) -> ?s
             Γ ⊢ r2 ⇐ ?t2
             -------------------------
-            Γ ⊢ (r1 r2) ⇒ ?s ⟦r1⟧               -}
-            x  <- fresh "x"
-            t2 <- eval (        vals ctx) <$> newMeta "t2"
-            s  <- eval ((x, t2):vals ctx) <$> newMeta "s"
+            Γ ⊢ (r1 r2) ⇒ s ⟦r1⟧                -}
+            x  <- refresh $ name "x"
+            t2 <- eval (        vals ctx) <$> refreshMeta ctx VUni "t2"
+            s  <- eval ((x, t2):vals ctx) <$> refreshMeta ctx VUni "s"
 
             r2 <- check ctx r2 t2
 
@@ -339,12 +233,13 @@ infer ctx (RApp r1 r2) = do
             return (App r1 r2, s)
 
 infer ctx (RLet x t e c) = do
-    ctx <- checkRLet ctx x t e
-    infer ctx c
+    (ctx, x, t, e) <- checkRLet ctx x t e
+    (c, s) <- infer ctx c
+    return (Let x t e c, s)
 
 infer ctx RHole = do
-    x <- newMeta "x"
-    t <- eval (vals ctx) <$> newMeta "t"
+    t <- eval (vals ctx) <$> refreshMeta ctx VUni "t"
+    x <- refreshMeta ctx t "x"
     return (x, t)
 
 infer ctx (RAnn e t) = do
@@ -360,8 +255,8 @@ infer ctx e = error $ "uninferrable " ++ show e
 
 --- pretty printing
 -- instance Show Trm where
---     show = showTerm
-
+--     show = showTerm []
+-- 
 -- instance Show Val where
 --     show = show . quote 0
 
@@ -373,22 +268,34 @@ showTerm = showTerm' True
 
 showTerm' :: Bool -> [Name] -> Trm -> String
 showTerm' toplevel env trm = case trm of
-    Lam n t e -> "(λ" ++ rollLam env (Lam n t e) ++ ")"
-    Pi n t e -> "(∀" ++ rollLam env (Pi n t e) ++ ")"
-    Let n _ e e' -> (if toplevel then "\n" else "")
-        ++ "let " ++ n ++ " = "
+    Lam n e -> "(λ" ++ rollLam env (Lam n e) ++ ")"
+    Pi n t e -> rollPi env False n t e
+    Let n t e e' -> (if toplevel then "\n" else "")
+        ++ "let " ++ show n ++ " : " ++ showTerm env t ++ " = "
         ++ showTerm' False env e ++ " in " ++ showTerm' True (n:env) e'
     App e e' -> "(" ++ rollApp env (App e e') ++ ")"
-    Var (Idx i) -> env !! i
+    Var (Idx i) -> show $ env !! i
     Uni -> "Type"
-    Meta m -> "?" ++ m
+    Meta m -> "?" ++ show m
 
     where
         -- display (λa . (λb . (λc . e))) as (λa b c . e)
         rollLam :: [Name] -> Trm -> String
         rollLam env trm = case trm of
-            Lam n t e -> "(" ++ n ++ " : " ++ showTerm env t ++ ") " ++ rollLam (n:env) e
+            Lam n e -> show n ++ " " ++ rollLam (n:env) e
+            --Pi n t e -> "(" ++ show n ++ " : " ++ showTerm env t ++ ") " ++ rollLam (n:env) e
             _         -> ". " ++ showTerm' False env trm
+
+        -- display (a -> (b -> (c -> d))) as (a -> b -> c -> d)
+        rollPi :: [Name] -> Bool -> Name -> Trm -> Trm -> String
+        rollPi env inner n t e = (if inner then "" else "(")
+            ++ (if isAnon n
+            then showTerm env t
+            else "(" ++ show n ++ " : " ++ showTerm env t ++ ")"
+            ) ++ " -> " ++ (case e of
+                Pi n' t' e' -> rollPi (n:env) True n' t' e'
+                _ -> showTerm (n:env) e)
+            ++ (if inner then "" else ")")
 
         -- display (((a b) c) d) as (a b c d)
         rollApp :: [Name] -> Trm -> String
@@ -398,7 +305,7 @@ showTerm' toplevel env trm = case trm of
 
 
 
---- church numerals
+--- untyped church numerals
 ex1 :: String
 ex1 = unlines
     [ "let zero = lam f x . x                           in"
@@ -412,6 +319,13 @@ ex1 = unlines
     , "thou"
     ]
 
+--- holes
+ex2 :: String
+ex2 = unlines
+    [ "let id : (A : _) -> A -> A   = lam T x . x                                in"
+    , "let List : Type -> Type      = lam A . (L : _) -> (A -> L -> L) -> L -> L in"
+    , "Type"
+    ]
 
 
 --interpret :: String -> Either ParseError Trm
@@ -419,7 +333,7 @@ interpret str = infer (Ctx [] []) <$> parse str
 
 main :: IO ()
 main = do
-    let ln = "let id : (A : _) -> A -> A = lam T x . x in Type"
+    let ln = ex2
     print $ parse ln
     putStrLn ""
     case interpret ln of
@@ -428,9 +342,9 @@ main = do
             Left err -> print err
             Right (trm, typ) -> putStrLn $ showTerm [] trm ++ "   :   " ++ showVal (Ctx [] []) typ
 
---     putStr "λ> "
---     hFlush stdout
---     ln <- getLine
---     when (ln /= "--q") $ do
---         print $ runEnv <$> interpret ln
---         main
+    -- putStr "λ> "
+    -- hFlush stdout
+    -- ln <- getLine
+    -- when (ln /= "--q") $ do
+    --     print $ runEnv <$> interpret ln
+    --     main

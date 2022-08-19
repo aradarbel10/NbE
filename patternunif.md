@@ -74,8 +74,10 @@ unification:
     - substitute `β ↦ uγ` in the entire rest of the mctx & problem
 3. flexible problems
 - flex-rigid:
+    start shifting left:
     - shift past metadefs not occuring in problem
     - carry metadefs occuring in problem
+    - block on metadefs occuring in carried defs
     - shift past any other problem
 
     when reached the head metavar `Δ,α : A, ∀Γ. (α sp : S) ≡ (t : T)`
@@ -89,7 +91,6 @@ unification:
         - scope-correct: `α` never occurs in carried metadefs `Ξ` or in `t`
         - type-correct: solution is well typed under mctx `Δ,Ξ`
     
-    otherwise try shifting left:
 - flex-flex:
     when `Δ,α : T, ∀Γ. (α sp) ≡ (β sp')` and `|sp| = |sp'|`
         - first try solving for `α` by inversion
