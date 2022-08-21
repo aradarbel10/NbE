@@ -1,6 +1,9 @@
 # Normalization by Evaluation
 This repo contains my learning process of normalization by evaluation and advanced type checking techniques
 
+- [NbE](https://github.com/aradarbel10/NbE/tree/master)
+- [Higher Order Pattern Unification](https://github.com/aradarbel10/NbE/tree/HOPU)
+
 ## Example
 ```
 let zero = lam f x . x                           in
@@ -15,6 +18,10 @@ thou"
 ```
 
 ## References
+### NbE
 - [Elaboration Zoo](https://github.com/AndrasKovacs/elaboration-zoo) by the invaluable Andras Kovacs
 - [Beautifully-commented example](https://discord.com/channels/633240603777433601/633240603777433603/1008392203179143249) by brendanzab
 - All the peeps over at the [PLT Discord Server](http://discord.gg/4Kjt3ZE)
+### Pattern Unification
+- [A tutorial implementation of dynamic pattern unification](https://adam.gundry.co.uk/pub/pattern-unify/pattern-unification-2012-07-10.pdf) Gundry & McBride
+- [Higher-Order Constraint Simplification In Dependent Type Theory](http://www.cs.cmu.edu/~jcreed/papers/csl08-hocs.pdf) Reed
