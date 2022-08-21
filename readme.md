@@ -1,6 +1,9 @@
 # Normalization by Evaluation
 This repo contains my learning process of normalization by evaluation and advanced type checking techniques
 
+- [NbE](https://github.com/aradarbel10/NbE/tree/master)
+- [Higher Order Pattern Unification](https://github.com/aradarbel10/NbE/tree/HOPU)
+
 ## Example
 ```
 let zero = lam f x . x                           in
